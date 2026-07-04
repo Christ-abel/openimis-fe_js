@@ -33,7 +33,8 @@ export const packages = [
   "@openimis/fe-language_fr",
   "@openimis/fe-claim_sampling",
   "@openimis/fe-deduplication",
-  "@openimis/fe-payroll"
+  "@openimis/fe-payroll",
+  "@openimis/fe-phc_pulse"
 ];
 
 export async function loadModules(cfg = {}) {
@@ -366,6 +367,17 @@ export async function loadModules(cfg = {}) {
   } catch (error) {
     console.error(`❌ Failed to import module "PayrollModule". Error: ${error}`);
     alert(`Failed to load module "PayrollModule". See console for details.`);
+  }
+
+  // 🔄 Dynamically importing PhcPulseModule
+  try {
+    const module = await import("@openimis/fe-phc_pulse");
+    loadedModules.push(
+      module.PhcPulseModule(cfg["fe-phc_pulse"] || {})
+    );
+  } catch (error) {
+    console.error(`❌ Failed to import module "PhcPulseModule". Error: ${error}`);
+    alert(`Failed to load module "PhcPulseModule". See console for details.`);
   }
 
   return loadedModules;

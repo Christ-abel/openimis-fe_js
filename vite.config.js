@@ -69,6 +69,7 @@ export default defineConfig(({ mode }) => ({
     ],
     alias: {
       //<<DYNAMIC_ALIAS_PLACEHOLDER>>
+      "@openimis/fe-phc_pulse": path.resolve('../openimis-fe-phc_pulse','src'), //DYNAMIC_ALIAS,
       
       "react-dom": path.resolve(__dirname, "./node_modules/react-dom"),
             "react/jsx-runtime": path.resolve(__dirname, "./node_modules/react/jsx-runtime"),
@@ -141,8 +142,9 @@ export default defineConfig(({ mode }) => ({
     historyApiFallback: true,
     proxy: {
       "/api": {
-        target: "http://localhost:8000",
+        target: "https://localhost",
         changeOrigin: true,
+        secure: false,
       },
       "/opensearch": {
       target: "http://opensearch:5410",

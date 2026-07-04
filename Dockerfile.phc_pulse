@@ -1,0 +1,97 @@
+# syntax=docker/dockerfile:1
+# Fork of this repo's own Dockerfile with one real addition: brings in our
+# local phc_pulse frontend module so it can be npm-installed via the
+# "file:../openimis-fe-phc_pulse" reference in this repo's openimis.json.
+#
+# Build context is the PARENT directory (openimis-hackathon/, set via
+# ../openimis-dist_dkr/docker-compose.override.yml's `context: ..`), not
+# just this repo -- buildx's `additional_contexts` feature (the "correct"
+# way to pull in a sibling directory without widening the context) hit a
+# real bug on this Windows/Docker Desktop setup ("invalid file request"),
+# so this works around it by widening the context and prefixing every COPY
+# with the relevant subdirectory name instead. Everything else is otherwise
+# unchanged from the original Dockerfile.
+#
+# The original Dockerfile is left untouched (sibling file, not overwritten)
+# so a vanilla build without PHC Pulse still works.
+#
+# npm installs below use a BuildKit cache mount for /home/node/.npm: on a
+# flaky connection, npm install can ECONNRESET partway through a 10+ minute
+# download. Without the cache mount, a retried `docker compose up --build`
+# re-downloads every package from scratch and can fail at the same point
+# forever. With it, already-fetched tarballs persist across build attempts.
+
+FROM node:24 AS dev-stage
+
+RUN apt-get update && apt-get install -y nano openssl software-properties-common
+
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/private/privkey.pem \
+    -out /etc/ssl/private/fullchain.pem \
+    -subj "/C=DE/ST=_/L=_/O=_/OU=_/CN=localhost"
+
+RUN mkdir -p /home/node/.npm-global
+RUN chown node:node /home/node/.npm-global
+RUN npm config set prefix /home/node/.npm-global
+RUN mkdir -p /usr/local/lib/node_modules
+RUN chown node:node /usr/local/lib/node_modules
+RUN npm config set prefix /usr/local/lib/node_modules
+
+RUN mkdir -p /frontend-packages && chown node:node /frontend-packages
+
+# --- addition vs. the original Dockerfile ---
+COPY openimis-fe-phc_pulse/ /openimis-fe-phc_pulse
+# --- end addition ---
+
+RUN mkdir /openimis-fe_js
+WORKDIR /openimis-fe_js
+COPY openimis-fe_js/ /openimis-fe_js
+RUN chown node:node /openimis-fe_js -R
+RUN chown -R node:node /openimis-fe-phc_pulse
+ARG OPENIMIS_CONF_JSON
+ENV OPENIMIS_CONF_JSON=${OPENIMIS_CONF_JSON}
+ENV NODE_ENV=development
+USER node
+ENTRYPOINT ["/bin/bash", "/openimis-fe_js/script/entrypoint-dev.sh"]
+
+FROM dev-stage AS build-stage
+USER node
+ARG MODE=production
+ENV GENERATE_SOURCEMAP=true
+ENV NODE_ENV=$MODE
+RUN npm config set fetch-timeout 600000 && \
+    npm config set fetch-retry-mintimeout 30000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    npm config set fetch-retries 8 && \
+    npm config set maxsockets 4
+RUN npm config set prefix /home/node/.npm-global
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    npm install -g npm@latest
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    npm install -g shelljs yargs
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    bash -c 'npm cache verify || npm cache clean --force; for i in 1 2 3 4 5 6; do npm install --legacy-peer-deps --include=dev && exit 0; echo "npm install attempt $i failed, cleaning partial state and retrying..."; rm -rf node_modules package-lock.json; npm cache clean --force; sleep 5; done; exit 1'
+RUN node ./openimis-config-vite.js -c ./openimis.json
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    bash -c 'npm cache verify || npm cache clean --force; for i in 1 2 3 4 5 6; do npm install --legacy-peer-deps --include=dev && exit 0; echo "npm install attempt $i failed, cleaning partial state and retrying..."; rm -rf node_modules package-lock.json; npm cache clean --force; sleep 5; done; exit 1'
+RUN npx vite build --mode $MODE
+
+FROM nginx:latest
+COPY --from=build-stage /openimis-fe_js/dist/ /usr/share/nginx/html
+COPY --from=build-stage /etc/ssl/private/ /etc/nginx/ssl/live/host
+COPY openimis-fe_js/conf /conf
+COPY openimis-fe_js/script/entrypoint.sh /script/entrypoint.sh
+RUN openssl dhparam -out /etc/nginx/dhparam.pem 2048
+RUN sed -i 's/\r$//' /script/entrypoint.sh
+RUN chmod a+x /script/entrypoint.sh
+WORKDIR /script
+ENV DATA_UPLOAD_MAX_MEMORY_SIZE=12582912
+ENV NEW_OPENIMIS_HOST="localhost"
+ENV PUBLIC_URL="front"
+ENV REACT_APP_API_URL="api"
+ENV REACT_APP_SENTRY_DSN=""
+ENV ROOT_MOBILEAPI="rest"
+ENV FORCE_RELOAD=""
+ENV OPENSEARCH_PROXY_ROOT="opensearch"
+ENTRYPOINT ["/bin/bash", "/script/entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]
